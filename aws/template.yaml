@@ -1,0 +1,109 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Stack to create API Gateway, Lambda function, and SNS Topic for access notifications.
+
+Resources:
+  AccessNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: AccessNotificationTopic
+
+  AccessNotificationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AccessNotificationLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref AccessNotificationTopic
+
+  AccessNotificationLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: AccessNotificationLambda
+      Handler: index.lambda_handler
+      Role: !GetAtt AccessNotificationLambdaRole.Arn
+      Runtime: python3.8
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+
+          def lambda_handler(event, context):
+              sns = boto3.client('sns')
+              message = json.dumps(event)
+              topic_arn = os.environ['SNS_TOPIC_ARN']
+
+              try:
+                  sns.publish(
+                      TopicArn=topic_arn,
+                      Message=message,
+                      Subject='Access Notification'
+                  )
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({'message': 'Notification sent successfully'})
+                  }
+              except Exception as e:
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({'error': str(e)})
+                  }
+
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref AccessNotificationTopic
+
+  AccessNotificationApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: AccessNotificationApi
+
+  AccessNotificationResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt AccessNotificationApi.RootResourceId
+      PathPart: sns
+      RestApiId: !Ref AccessNotificationApi
+
+  AccessNotificationMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ResourceId: !Ref AccessNotificationResource
+      RestApiId: !Ref AccessNotificationApi
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AccessNotificationLambda.Arn}/invocations
+          - {
+            AccessNotificationLambda: !Ref AccessNotificationLambda
+          }
+
+  AccessNotificationLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref AccessNotificationLambda
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${AccessNotificationApi}/*/POST/sns
+
+Outputs:
+  ApiUrl:
+    Description: "API Gateway endpoint URL for sending access notifications"
+    Value: !Sub "https://${AccessNotificationApi}.execute-api.${AWS::Region}.amazonaws.com/prod/sns"
+
+
